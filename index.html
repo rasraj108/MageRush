@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mage Boss Rush - Rebalanced</title>
+    <style>
+        /* Base Reset & Styling */
+        body { margin: 0; overflow: hidden; background: #111; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: white; user-select: none; }
+        #game-container { position: relative; width: 100vw; height: 100vh; background: radial-gradient(circle at center, #2a2a35 0%, #111 100%); }
+        canvas { display: block; width: 100%; height: 100%; }
+
+        /* UI Overlays */
+        .bar-container { position: absolute; background: rgba(0, 0, 0, 0.5); border: 2px solid #555; border-radius: 5px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.5); }
+        .bar-label { position: absolute; width: 100%; text-align: center; top: 50%; transform: translateY(-50%); font-size: 14px; font-weight: bold; pointer-events: none; text-shadow: 1px 1px 2px black; }
+
+        /* Boss HP (Top Center) */
+        #boss-hp-container { top: 20px; left: 50%; transform: translateX(-50%); height: 30px; width: 60%; border-color: #800; }
+        #boss-hp { height: 100%; width: 100%; background: linear-gradient(90deg, #ff0000, #ff4444); transition: width 0.1s linear; }
+
+        /* Player Stats (Bottom Corners) */
+        #mana-container { bottom: 20px; left: 20px; height: 25px; width: 250px; border-color: #005588; }
+        #mana { height: 100%; width: 0%; background: linear-gradient(90deg, #0088ff, #00ffff); transition: width 0.1s linear; }
+
+        #player-hp-container { bottom: 20px; right: 20px; height: 25px; width: 200px; border-color: #008800; }
+        #player-hp { height: 100%; width: 100%; background: linear-gradient(90deg, #00cc00, #55ff55); transition: width 0.2s ease-out; }
+
+        /* Menus */
+        #menu-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 10; }
+        h1 { font-size: 48px; margin-bottom: 10px; color: #ff4444; text-shadow: 0 0 10px red; }
+        p { font-size: 18px; color: #ccc; margin-bottom: 30px; }
+        button { padding: 15px 30px; font-size: 20px; font-weight: bold; cursor: pointer; background: #fff; color: #000; border: none; border-radius: 5px; transition: transform 0.1s, background 0.2s; }
+        button:hover { background: #ff4444; color: white; transform: scale(1.05); }
+
+        /* Visual Effects */
+        .shake { animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both; }
+        @keyframes shake {
+            10%, 90% { transform: translate3d(-4px, 2px, 0); }
+            20%, 80% { transform: translate3d(5px, -2px, 0); }
+            30%, 50%, 70% { transform: translate3d(-8px, 4px, 0); }
+            40%, 60% { transform: translate3d(8px, -4px, 0); }
+        }
+
+        #flash-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: white; opacity: 0; pointer-events: none; z-index: 5; }
+        .flash { animation: flashAnim 0.5s ease-out; }
+        @keyframes flashAnim {
+            0% { opacity: 0.8; }
+            100% { opacity: 0; }
+        }
+        
+        #damage-vignette { position: absolute; top: 0; left: 0; width: 100%; height: 100%; box-shadow: inset 0 0 0px 0px rgba(255,0,0,0); pointer-events: none; z-index: 4; transition: box-shadow 0.2s; }
+        .hurt { box-shadow: inset 0 0 100px 20px rgba(255,0,0,0.6) !important; }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <div id="flash-overlay"></div>
+        <div id="damage-vignette"></div>
+        <canvas id="gameCanvas"></canvas>
+        
+        <div id="boss-hp-container" class="bar-container">
+            <div id="boss-hp"></div>
+            <div class="bar-label">BOSS HP (Survive to Win!)</div>
+        </div>
+
+        <div id="mana-container" class="bar-container">
+            <div id="mana"></div>
+            <div class="bar-label" id="mana-text">MANA (Charging...)</div>
+        </div>
+
+        <div id="player-hp-container" class="bar-container">
+            <div id="player-hp"></div>
+            <div class="bar-label">MAGE HP</div>
+        </div>
+
+        <div id="menu-overlay">
+            <h1 id="menu-title">Boss Rush</h1>
+            <p id="menu-desc">Use WASD or Arrows to dodge. Press SPACE when Mana is full.</p>
+            <button id="start-btn">Start Game</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const bossHpBar = document.getElementById('boss-hp');
+        const manaBar = document.getElementById('mana');
+        const manaText = document.getElementById('mana-text');
+        const playerHpBar = document.getElementById('player-hp');
+        const menuOverlay = document.getElementById('menu-overlay');
+        const menuTitle = document.getElementById('menu-title');
+        const menuDesc = document.getElementById('menu-desc');
+        const startBtn = document.getElementById('start-btn');
+        const gameContainer = document.getElementById('game-container');
+        const flashOverlay = document.getElementById('flash-overlay');
+        const damageVignette = document.getElementById('damage-vignette');
+
+        let gameActive = false;
+        let animationId;
+        let bossHp = 100;
+        let mana = 0;
+        let playerHp = 3;
+        let projectiles = [];
+        let particles = [];
+
+        const player = { x: 0, y: 0, radius: 15, speed: 6, color: '#00ffff' };
+
+        const keys = { w: false, a: false, s: false, d: false, ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false };
+        window.addEventListener('keydown', (e) => {
+            if (keys.hasOwnProperty(e.key)) keys[e.key] = true;
+            if (e.code === 'Space' && gameActive && mana >= 100) triggerManaBlast();
+        });
+        window.addEventListener('keyup', (e) => {
+            if (keys.hasOwnProperty(e.key)) keys[e.key] = false;
+        });
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            if (!gameActive) {
+                player.x = canvas.width / 2;
+                player.y = canvas.height / 2;
+            }
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        function startGame() {
+            gameActive = true;
+            menuOverlay.style.display = 'none';
+            bossHp = 100;
+            mana = 0;
+            playerHp = 3;
+            projectiles = [];
+            particles = [];
+            player.x = canvas.width / 2;
+            player.y = canvas.height / 2;
+            updateUI();
+            update();
+        }
+
+        startBtn.addEventListener('click', startGame);
+
+        function update() {
+            if (!gameActive) return;
+
+            if ((keys.w || keys.ArrowUp) && player.y > player.radius) player.y -= player.speed;
+            if ((keys.s || keys.ArrowDown) && player.y < canvas.height - player.radius) player.y += player.speed;
+            if ((keys.a || keys.ArrowLeft) && player.x > player.radius) player.x -= player.speed;
+            if ((keys.d || keys.ArrowRight) && player.x < canvas.width - player.radius) player.x += player.speed;
+
+            bossHp -= 0.03; 
+            if (bossHp <= 0) {
+                endGame(true);
+                return;
+            }
+
+            if (mana < 100) {
+                mana += 0.2;
+                if (mana >= 100) {
+                    mana = 100;
+                    manaText.innerText = "MANA FULL - PRESS SPACE!";
+                    manaText.style.color = "#ffff00";
+                }
+            }
+
+            // *** CHANGED: Difficulty Curve ***
+            // Calculates how far along you are from 0.0 (start) to 1.0 (end)
+            const progress = (100 - bossHp) / 100; 
+            // Squaring the progress creates a gentle curve that spikes at the end
+            const difficultyMultiplier = 1 + (Math.pow(progress, 2) * 2); 
+
+            // *** CHANGED: Lower base spawn rate ***
+            // Halved from 0.04 to 0.02 base chance
+            if (Math.random() < 0.02 * difficultyMultiplier) {
+                spawnProjectile(difficultyMultiplier);
+            }
+
+            for (let i = projectiles.length - 1; i >= 0; i--) {
+                let p = projectiles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+
+                const dx = p.x - player.x;
+                const dy = p.y - player.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                
+                if (dist < player.radius + p.radius) {
+                    takeDamage();
+                    projectiles.splice(i, 1);
+                    continue;
+                }
+
+                if (p.x < -100 || p.x > canvas.width + 100 || p.y < -100 || p.y > canvas.height + 100) {
+                    projectiles.splice(i, 1);
+                }
+            }
+
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].life -= 0.05;
+                particles[i].x += particles[i].vx;
+                particles[i].y += particles[i].vy;
+                if (particles[i].life <= 0) particles.splice(i, 1);
+            }
+
+            updateUI();
+            draw();
+            animationId = requestAnimationFrame(update);
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+            ctx.fillStyle = player.color;
+            ctx.fill();
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = player.color;
+            ctx.closePath();
+            ctx.shadowBlur = 0;
+
+            projectiles.forEach(p => {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                ctx.fillStyle = '#ff4444';
+                ctx.fill();
+                ctx.closePath();
+            });
+
+            particles.forEach(p => {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius * p.life, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(0, 255, 255, ${p.life})`;
+                ctx.fill();
+                ctx.closePath();
+            });
+        }
+
+        function spawnProjectile(mult) {
+            let x, y;
+            if (Math.random() < 0.5) {
+                x = Math.random() < 0.5 ? -30 : canvas.width + 30;
+                y = Math.random() * canvas.height;
+            } else {
+                x = Math.random() * canvas.width;
+                y = Math.random() < 0.5 ? -30 : canvas.height + 30;
+            }
+
+            const angle = Math.atan2(canvas.height/2 - y, canvas.width/2 - x) + (Math.random() - 0.5) * 0.5;
+            
+            // *** CHANGED: Lower base speed ***
+            // Reduced base speed from (3 to 6) down to (2 to 4)
+            const speed = (2 + Math.random() * 2) * mult;
+
+            projectiles.push({
+                x: x, y: y,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                radius: 6 + Math.random() * 6
+            });
+        }
+
+        function triggerManaBlast() {
+            mana = 0;
+            manaText.innerText = "MANA (Charging...)";
+            manaText.style.color = "white";
+            
+            projectiles.forEach(p => {
+                for(let i=0; i<3; i++) {
+                    particles.push({
+                        x: p.x, y: p.y, 
+                        vx: (Math.random()-0.5)*10, vy: (Math.random()-0.5)*10, 
+                        radius: 3, life: 1
+                    });
+                }
+            });
+            projectiles = [];
+
+            flashOverlay.classList.remove('flash');
+            void flashOverlay.offsetWidth; 
+            flashOverlay.classList.add('flash');
+        }
+
+        function takeDamage() {
+            playerHp--;
+            
+            gameContainer.classList.remove('shake');
+            void gameContainer.offsetWidth; 
+            gameContainer.classList.add('shake');
+
+            damageVignette.classList.add('hurt');
+            setTimeout(() => damageVignette.classList.remove('hurt'), 200);
+
+            if (playerHp <= 0) endGame(false);
+        }
+
+        function updateUI() {
+            bossHpBar.style.width = Math.max(0, bossHp) + '%';
+            manaBar.style.width = mana + '%';
+            playerHpBar.style.width = (playerHp / 3 * 100) + '%';
+        }
+
+        function endGame(won) {
+            gameActive = false;
+            cancelAnimationFrame(animationId);
+            menuOverlay.style.display = 'flex';
+            if (won) {
+                menuTitle.innerText = "BOSS DEFEATED!";
+                menuTitle.style.color = "#55ff55";
+                menuTitle.style.textShadow = "0 0 10px #00ff00";
+                menuDesc.innerText = "You survived the rush.";
+            } else {
+                menuTitle.innerText = "GAME OVER";
+                menuTitle.style.color = "#ff4444";
+                menuTitle.style.textShadow = "0 0 10px red";
+                menuDesc.innerText = "The Mage was overwhelmed.";
+            }
+            startBtn.innerText = "Play Again";
+        }
+    </script>
+</body>
+</html>
